@@ -41,15 +41,27 @@ def create_customers(**context):
     customers = [generate_random_customer() for _ in range(5)]
     context['ti'].xcom_push(key='customers', value=customers)
 
+import logging
+
 def create_orders(**context):
     customers = context['ti'].xcom_pull(key='customers', task_ids='create_customers')
-    orders = [generate_random_order(customer[0]) for customer in customers]
-    context['ti'].xcom_push(key='orders', value=orders)
+    if customers:
+        orders = [generate_random_order(customer[0]) for customer in customers]
+        logging.info(f'Generated orders: {orders}')
+        context['ti'].xcom_push(key='orders', value=orders)
+    else:
+        logging.error('No customers found, unable to create orders')
+        raise ValueError('No customers found in XCom')
 
 def create_order_items(**context):
     orders = context['ti'].xcom_pull(key='orders', task_ids='create_orders')
-    order_items = [generate_random_order_item(order[0]) for order in orders]
-    context['ti'].xcom_push(key='order_items', value=order_items)
+    if orders:
+        order_items = [generate_random_order_item(order[0]) for order in orders]
+        logging.info(f'Generated order items: {order_items}')
+        context['ti'].xcom_push(key='order_items', value=order_items)
+    else:
+        logging.error('No orders found, unable to create order items')
+        raise ValueError('No orders found in XCom')
 
 def verify_uniqueness(**context):
     # Basic uniqueness check before insert
