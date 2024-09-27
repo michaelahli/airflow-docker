@@ -80,6 +80,8 @@ services:
       timeout: 10s
       retries: 5
     restart: always
+    ports:
+      - 8083:8080
 
   airflow-scheduler:
     <<: *airflow-common
