@@ -1,10 +1,10 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.apache.hive.hooks.hive import HiveCliHook
 from airflow.providers.jdbc.hooks.jdbc import JdbcHook
 from datetime import datetime
 import random
 import string
+import logging
 
 # Parameters
 jdbc_conn_id = 'hive_jdbc'
@@ -32,7 +32,7 @@ def generate_random_order_item(order_id):
 
 def insert_data_into_hive(table, data):
     # Insert data into Hive using Airflow JDBC hook
-    jdbc_hook = JdbcHook(jdbc_conn_id=jdbc_conn_id)
+    jdbc_hook = JdbcHook(jdbc_conn_id=jdbc_conn_id, driver_class='org.apache.hive.jdbc.HiveDriver')
     insert_query = f"INSERT INTO {table} VALUES {','.join([str(row) for row in data])}"
     jdbc_hook.run(insert_query)
 
@@ -40,8 +40,6 @@ def insert_data_into_hive(table, data):
 def create_customers(**context):
     customers = [generate_random_customer() for _ in range(5)]
     context['ti'].xcom_push(key='customers', value=customers)
-
-import logging
 
 def create_orders(**context):
     customers = context['ti'].xcom_pull(key='customers', task_ids='create_customers')
@@ -132,7 +130,7 @@ with DAG(
         provide_context=True
     )
 
-    # Task dependencies
-    create_customers_task >> [create_orders_task, create_order_items_task]
-    [create_orders_task, create_order_items_task] >> verify_uniqueness_task
+    # Corrected Task dependencies
+    create_customers_task >> create_orders_task >> create_order_items_task
+    create_order_items_task >> verify_uniqueness_task
     verify_uniqueness_task >> insert_into_hive_task
