@@ -15,3 +15,4 @@ ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r /requirements.txt
 RUN pip install "apache-airflow[password,celery,mysql,jdbc,apache.hive,apache.spark,apache.hdfs]==${AIRFLOW_VERSION}"
+RUN pip install apache-airflow-providers-apache-hive

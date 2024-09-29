@@ -1,13 +1,10 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.jdbc.hooks.jdbc import JdbcHook
+from airflow.providers.apache.hive.operators.hive import HiveOperator
 from datetime import datetime
 import random
 import string
 import logging
-
-# Parameters
-jdbc_conn_id = 'hive_jdbc'
 
 # Helper functions to generate random data
 def generate_random_customer():
@@ -30,11 +27,18 @@ def generate_random_order_item(order_id):
     price = round(random.uniform(5.0, 100.0), 2)
     return order_item_id, order_id, product_id, quantity, price
 
-def insert_data_into_hive(table, data):
-    # Insert data into Hive using Airflow JDBC hook
-    jdbc_hook = JdbcHook(jdbc_conn_id=jdbc_conn_id, driver_class='org.apache.hive.jdbc.HiveDriver')
-    insert_query = f"INSERT INTO {table} VALUES {','.join([str(row) for row in data])}"
-    jdbc_hook.run(insert_query)
+# Helper function to format data into HiveQL values
+def format_values(data):
+    formatted_rows = []
+    for row in data:
+        formatted_row = []
+        for value in row:
+            if isinstance(value, str):
+                formatted_row.append(f"'{value}'")  # Add single quotes around string values
+            else:
+                formatted_row.append(str(value))  # Leave other values as-is
+        formatted_rows.append(f"({', '.join(formatted_row)})")
+    return ', '.join(formatted_rows)
 
 # Python functions to handle tasks
 def create_customers(**context):
@@ -62,12 +66,10 @@ def create_order_items(**context):
         raise ValueError('No orders found in XCom')
 
 def verify_uniqueness(**context):
-    # Basic uniqueness check before insert
     customers = context['ti'].xcom_pull(key='customers', task_ids='create_customers')
     orders = context['ti'].xcom_pull(key='orders', task_ids='create_orders')
     order_items = context['ti'].xcom_pull(key='order_items', task_ids='create_order_items')
     
-    # Verify uniqueness in customers, orders, order_items
     if len(customers) != len(set([customer[0] for customer in customers])):
         raise ValueError('Duplicate customer IDs found!')
     if len(orders) != len(set([order[0] for order in orders])):
@@ -75,16 +77,19 @@ def verify_uniqueness(**context):
     if len(order_items) != len(set([item[0] for item in order_items])):
         raise ValueError('Duplicate order item IDs found!')
 
-def insert_into_hive(**context):
-    # Fetch data
+def prepare_hive_queries(**context):
     customers = context['ti'].xcom_pull(key='customers', task_ids='create_customers')
     orders = context['ti'].xcom_pull(key='orders', task_ids='create_orders')
     order_items = context['ti'].xcom_pull(key='order_items', task_ids='create_order_items')
-    
-    # Insert data into Hive tables
-    insert_data_into_hive('customers', customers)
-    insert_data_into_hive('orders', orders)
-    insert_data_into_hive('order_items', order_items)
+
+    customers_query = f"INSERT INTO customers VALUES {format_values(customers)};"
+    orders_query = f"INSERT INTO orders VALUES {format_values(orders)};"
+    order_items_query = f"INSERT INTO order_items VALUES {format_values(order_items)};"
+
+    # Push the formatted queries to XCom
+    context['ti'].xcom_push(key='customers_query', value=customers_query)
+    context['ti'].xcom_push(key='orders_query', value=orders_query)
+    context['ti'].xcom_push(key='order_items_query', value=order_items_query)
 
 # Default arguments for DAG
 default_args = {
@@ -124,13 +129,32 @@ with DAG(
         provide_context=True
     )
 
-    insert_into_hive_task = PythonOperator(
-        task_id='insert_into_hive',
-        python_callable=insert_into_hive,
+    prepare_hive_queries_task = PythonOperator(
+        task_id='prepare_hive_queries',
+        python_callable=prepare_hive_queries,
         provide_context=True
     )
 
-    # Corrected Task dependencies
+    insert_customers_hive_task = HiveOperator(
+        task_id='insert_customers_hive',
+        hql="{{ ti.xcom_pull(key='customers_query', task_ids='prepare_hive_queries') }}",
+        hive_cli_conn_id='hive_operator_conn'
+    )
+
+    insert_orders_hive_task = HiveOperator(
+        task_id='insert_orders_hive',
+        hql="{{ ti.xcom_pull(key='orders_query', task_ids='prepare_hive_queries') }}",
+        hive_cli_conn_id='hive_operator_conn'
+    )
+
+    insert_order_items_hive_task = HiveOperator(
+        task_id='insert_order_items_hive',
+        hql="{{ ti.xcom_pull(key='order_items_query', task_ids='prepare_hive_queries') }}",
+        hive_cli_conn_id='hive_operator_conn'
+    )
+
+    # Task dependencies
     create_customers_task >> create_orders_task >> create_order_items_task
     create_order_items_task >> verify_uniqueness_task
-    verify_uniqueness_task >> insert_into_hive_task
+    verify_uniqueness_task >> prepare_hive_queries_task
+    prepare_hive_queries_task >> [insert_customers_hive_task, insert_orders_hive_task, insert_order_items_hive_task]
